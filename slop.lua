@@ -9,6 +9,7 @@
   - Command bar (Spotlight style): jump to any tab or control
   - Mobile: draggable floating toggle button, bigger rows and traffic-light hit areas on touch devices
   - Every control returns an object with :SetVisible(bool), :SetDisabled(bool), :SetText(text)
+  - Key system: UI:KeySystem({...}) — auth dialog with saved keys, shake on a wrong key
 ]]
 
 local Players = game:GetService("Players")
@@ -523,6 +524,124 @@ function Lib:Notify(o)
 	return { Dismiss = function() dismiss() end }
 end
 
+-- key system (macOS-style authentication dialog) -----------------------------------------
+-- local ok = UI:KeySystem({ Title = "My Hub", Keys = { "abc" } or Validate = function(key) return bool end,
+--   Link = "https://get.key/here", Note = "...", SaveKey = true, FileName = "MyHub/key.txt" })
+-- yields until the user enters a valid key (true) or cancels (false); a saved valid key skips the dialog
+function Lib:KeySystem(o)
+	o = o or {}
+	local file = o.FileName or ("Yosemite/Keys/" .. (o.Title or "key"):gsub("[^%w]", "") .. ".txt")
+	local function trim(k) return ((k or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+	local function valid(k)
+		k = trim(k)
+		if k == "" then return false end
+		if o.Validate then
+			local ok, r = pcall(o.Validate, k)
+			return ok and r == true
+		end
+		for _, v in ipairs(o.Keys or {}) do if v == k then return true end end
+		return false
+	end
+	if o.SaveKey ~= false then
+		local ok, k = pcall(readfile, file)
+		if ok and k and valid(k) then return true end
+	end
+
+	local result
+	local gui = new("ScreenGui", { Name = "YosemiteKey", ResetOnSpawn = false, DisplayOrder = 90, Parent = guiParent() })
+	local f = new("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5),
+		Size = UDim2.fromOffset(400, 0), AutomaticSize = AY, Parent = gui }, { corner(6) })
+	local fs = stroke(nil)
+	tc(f, "BackgroundColor3", "Window"); tc(fs, "Transparency", "WinStroke"); fs.Parent = f
+	local bar = new("Frame", { BackgroundColor3 = WHITE, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 22), Parent = f }, { corner(6), tgrad("BarTop", "BarBot") })
+	tc(new("Frame", { BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -6), Size = UDim2.new(1, 0, 0, 6), Parent = bar }), "BackgroundColor3", "BarBot")
+	label({ Text = o.Title or "Key Required", TextSize = 12, Color = "Title", TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromScale(1, 1), Parent = bar })
+	local xb = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = LIGHTS[1][1], Position = UDim2.fromOffset(8, 5),
+		Size = UDim2.fromOffset(12, 12), Parent = bar }, { corner(6), new("UIStroke", { Color = LIGHTS[1][2] }) })
+
+	local body = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 22), Size = UDim2.fromScale(1, 0), AutomaticSize = AY, Parent = f },
+		{ pad(18, 16, 20, 20) })
+	icon("lock", 48, "Icon", { Position = UDim2.fromOffset(0, 2), Parent = body })
+	local col = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(66, 0), Size = UDim2.new(1, -66, 0, 0), AutomaticSize = AY, Parent = body },
+		{ list(nil, 8) })
+	label({ Text = o.Subtitle or "Enter your key to continue.", Font = BOLD, TextWrapped = true, AutomaticSize = AY, Size = UDim2.new(1, 0, 0, 16), Parent = col })
+	if o.Note then
+		label({ Text = o.Note, TextSize = 12, Color = "Dim", TextWrapped = true, AutomaticSize = AY, Size = UDim2.new(1, 0, 0, 14), LayoutOrder = 1, Parent = col })
+	end
+	local s = stroke("Border")
+	local box = new("TextBox", { Text = "", PlaceholderText = "Key", ClearTextOnFocus = false, Font = FONT, TextSize = 13, BorderSizePixel = 0,
+		TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, 0, 0, 24), LayoutOrder = 2, Parent = col }, { corner(3), s, pad(0, 0, 6, 6) })
+	tc(box, "BackgroundColor3", "Field"); tc(box, "TextColor3", "Text"); tc(box, "PlaceholderColor3", "Placeholder")
+	local err = label({ Text = "", TextSize = 12, Color = false, TextColor3 = RGB(230, 70, 60), TextWrapped = true, AutomaticSize = AY,
+		Size = UDim2.new(1, 0, 0, 0), LayoutOrder = 3, Visible = false, Parent = col })
+	local foot = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 4, Parent = col },
+		{ list(H_DIR, 8, RIGHT, MID) })
+
+	local busy = false
+	local function finish(ok)
+		if result ~= nil then return end
+		result = ok
+		tw(scaleOf(f), .15, { Scale = .9 }).Completed:Connect(function() gui:Destroy() end)
+	end
+	local function shake()
+		local p = f.Position
+		task.spawn(function()
+			for _, dx in ipairs({ -12, 12, -9, 9, -5, 5, 0 }) do
+				f.Position = p + UDim2.fromOffset(dx, 0)
+				task.wait(saved.Reduce and 0 or .035)
+			end
+			f.Position = p
+		end)
+	end
+	local function submit()
+		if busy or result ~= nil then return end
+		busy = true
+		err.Visible, err.Text = true, "Checking…"
+		err.TextColor3 = T.Dim
+		local k = trim(box.Text)
+		local ok = valid(k)
+		busy = false
+		if ok then
+			if o.SaveKey ~= false then pcall(function() mkdirs(file:match("^(.*)/")); writefile(file, k) end) end
+			finish(true)
+		else
+			err.TextColor3 = RGB(230, 70, 60)
+			err.Text = o.Invalid or "That key isn't valid."
+			task.delay(.15, function() s.Color = RGB(230, 70, 60) end) -- after the focus ring's fade-out
+			shake()
+		end
+	end
+	if o.Link then
+		pushButton(foot, { Text = "Get Key", Order = 0, Callback = function()
+			if setclipboard then
+				setclipboard(o.Link)
+				err.Visible, err.TextColor3, err.Text = true, T.Dim, "Link copied to your clipboard."
+			else
+				err.Visible, err.TextColor3, err.Text = true, T.Dim, o.Link
+			end
+		end })
+	end
+	pushButton(foot, { Text = "Cancel", Order = 1, Callback = function() finish(false) end })
+	pushButton(foot, { Text = "Continue", Default = true, Order = 2, Callback = submit })
+	xb.MouseButton1Click:Connect(function() finish(false) end)
+	box.Focused:Connect(function() ring(s, true) end)
+	box.FocusLost:Connect(function(enter) ring(s, false); if enter then submit() end end)
+
+	-- drag by the titlebar
+	local drag, start, orig
+	bar.InputBegan:Connect(function(i) if isPress(i) then drag, start, orig = true, i.Position, f.Position end end)
+	local c1 = UIS.InputChanged:Connect(function(i)
+		if drag and isMove(i) then local d = i.Position - start; f.Position = orig + UDim2.fromOffset(d.X, d.Y) end
+	end)
+	local c2 = UIS.InputEnded:Connect(function(i) if isPress(i) then drag = false end end)
+
+	pop(f, .9, .25)
+	task.defer(function() if result == nil then box:CaptureFocus() end end)
+	while result == nil do task.wait() end
+	c1:Disconnect(); c2:Disconnect()
+	return result
+end
+
 -- toggle / mobile button / global keys ------------------------------------------------
 function Window:_show(on)
 	local sc = self._scale
@@ -781,8 +900,22 @@ function Lib:Window(o)
 	hits[2].MouseButton1Click:Connect(function()
 		self.Mini = not self.Mini
 		win.ClipsDescendants = true
-		if self.Mini then full = root.Size end
-		tw(root, .25, { Size = self.Mini and UDim2.new(root.Size.X.Scale, root.Size.X.Offset, 0, self.BAR + 1) or full }, Enum.EasingStyle.Quint)
+		local body = { self.Sidebar, self._bodyP.Root, self.Content }
+		if self.Mini then
+			full = root.Size
+			if self._pop then self._pop.Close() end
+			if self._cp then self._cp.Close() end
+			self:_focus(nil)
+			for _, f in ipairs(body) do f.Visible = false end
+			self.Overlay.Visible = false
+		end
+		local mini = self.Mini
+		tw(root, .25, { Size = mini and UDim2.new(root.Size.X.Scale, root.Size.X.Offset, 0, self.BAR + 1) or full }, Enum.EasingStyle.Quint)
+			.Completed:Connect(function()
+				if self.Mini or mini then return end
+				for _, f in ipairs(body) do f.Visible = true end
+				self.Overlay.Visible = self._sheets > 0
+			end)
 	end)
 	hits[3].MouseButton1Click:Connect(function()
 		if self.Mini then return end
@@ -865,10 +998,22 @@ function Window:_sheet(width)
 		Size = UDim2.fromOffset(width, 0), AutomaticSize = AY, Visible = false, ZIndex = 6, Parent = self.Overlay },
 		{ corner(6), stroke(nil, .5), pad(22, 14, 16, 16), list(nil, 12) })
 	tc(f, "BackgroundColor3", "Window")
-	local body = new("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 0), AutomaticSize = AY, LayoutOrder = 1, Parent = f }, { list(nil, 12) })
+	local body = new("ScrollingFrame", { BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = 1,
+		CanvasSize = UDim2.new(), AutomaticCanvasSize = AY, ScrollBarThickness = 4, ScrollBarImageTransparency = .5, Parent = f },
+		{ list(nil, 12), pad(0, 0, 0, 8) })
+	tc(body, "ScrollBarImageColor3", "Scroll")
 	local foot = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 2, Parent = f }, { list(H_DIR, 8, RIGHT) })
 	local sh = { Frame = f, Body = body, Footer = foot, Open = false }
 	local win = self
+	-- body is as tall as its content, capped so the whole sheet fits under the titlebar; past that it scrolls
+	local lay = body:FindFirstChildOfClass("UIListLayout")
+	local function fit()
+		local chrome = f.AbsoluteSize.Y - body.AbsoluteSize.Y
+		local maxH = win.Overlay.AbsoluteSize.Y - chrome - 10
+		body.Size = UDim2.new(1, 0, 0, math.max(40, math.min(lay.AbsoluteContentSize.Y, maxH)))
+	end
+	lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fit)
+	win.Overlay:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
 	function sh:Show()
 		if sh.Open then return end
 		sh.Open = true
@@ -879,6 +1024,8 @@ function Window:_sheet(width)
 		win.Overlay.Visible = true
 		f.Visible = true
 		task.spawn(function()
+			RS.RenderStepped:Wait()
+			fit()
 			RS.RenderStepped:Wait()
 			f.Position = UDim2.new(.5, 0, 0, -f.AbsoluteSize.Y)
 			tw(f, .28, { Position = UDim2.new(.5, 0, 0, -6) }, Enum.EasingStyle.Quint)
