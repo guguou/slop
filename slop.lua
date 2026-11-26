@@ -660,6 +660,9 @@ dockRefresh = function()
 	dock.Visible = n > 0 and Lib.Visible
 end
 
+-- the parts of the window below the titlebar (hidden while shaded)
+function Window:_bodyParts() return { self.Sidebar, self._bodyP.Root, self.Content, self.Overlay } end
+
 function Window:Minimize()
 	if self.Mini then return end
 	self.Mini = true
@@ -667,7 +670,16 @@ function Window:Minimize()
 	if self._cp then self._cp.Close() end
 	if self._cmd then self._cmd.Close() end
 	self:_focus(nil)
-	local root, d = self.Root, getDock()
+	local root = self.Root
+	if self._minMode ~= "Dock" then
+		-- Shade: roll the window up into its titlebar
+		self._full = root.Size
+		self._win.ClipsDescendants = true
+		for _, f in ipairs(self:_bodyParts()) do f.Visible = false end
+		tw(root, .25, { Size = UDim2.new(root.Size.X.Scale, root.Size.X.Offset, 0, self.BAR + 1) }, Enum.EasingStyle.Quint)
+		return
+	end
+	local d = getDock()
 	local tile = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = WHITE, Size = UDim2.fromOffset(48, 48), Parent = d },
 		{ corner(10), stroke("Border"), tgrad("BtnTop", "BtnBot") })
 	icon(self._icon or "app-window", 26, "Text", { AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), Parent = tile })
@@ -694,6 +706,14 @@ end
 function Window:Restore()
 	if not self.Mini then return end
 	self.Mini = false
+	if self._minMode ~= "Dock" then
+		tw(self.Root, .25, { Size = self._full }, Enum.EasingStyle.Quint).Completed:Connect(function()
+			if self.Mini then return end
+			for _, f in ipairs(self:_bodyParts()) do f.Visible = true end
+			self.Overlay.Visible = self._sheets > 0
+		end)
+		return
+	end
 	local tile = self._tile
 	self._tile = nil
 	self.Root.Visible = Lib.Visible
@@ -708,7 +728,7 @@ end
 -- toggle / mobile button / global keys ------------------------------------------------
 function Window:_show(on)
 	local sc = self._scale
-	if self.Mini then return end
+	if self.Mini and self._minMode == "Dock" then return end
 	if on then
 		self.Root.Visible = true
 		sc.Scale = .92
@@ -883,6 +903,9 @@ function Window:_layout(anim)
 		for _, c in ipairs(tb.Captions) do c.Visible = labels end
 	end
 	set(self._line, { Position = UDim2.fromOffset(0, BAR) })
+	if self.Mini and self._minMode ~= "Dock" then
+		set(self.Root, { Size = UDim2.new(self.Root.Size.X.Scale, self.Root.Size.X.Offset, 0, BAR + 1) })
+	end
 	for _, f in ipairs({ self.Sidebar, self._bodyP.Root, self.Content, self.Overlay }) do
 		set(f, { Position = UDim2.new(f.Position.X.Scale, f.Position.X.Offset, 0, BAR + 1),
 			Size = UDim2.new(f.Size.X.Scale, f.Size.X.Offset, 1, -(BAR + 1)) })
@@ -918,7 +941,7 @@ function Lib:Window(o)
 
 	local cfg = o.Config or {}
 	local self = setmetatable({ Gui = gui, Root = root, Tabs = {}, Flags = {}, Thin = o.Thin, _bar = bar, _barP = barP, _bodyP = bodyP,
-		_line = line, _title = titleRow, _titleText = titleText, _titlePaint = titlePaint, _icon = o.Icon, _lights = {}, _n = 0, _q = "", _openSheets = {},
+		_line = line, _title = titleRow, _titleText = titleText, _titlePaint = titlePaint, _icon = o.Icon, _win = win, _minMode = o.Minimize or "Shade", _lights = {}, _n = 0, _q = "", _openSheets = {},
 		Config = { Folder = cfg.Folder or "Yosemite/Configs", Format = cfg.Format or "{name}.json" } }, Window)
 	if self.Thin == nil then self.Thin = saved.Thin or false end
 	self._scale = scaleOf(root)
@@ -962,7 +985,7 @@ function Lib:Window(o)
 			updateBlur()
 		end)
 	end)
-	hits[2].MouseButton1Click:Connect(function() self:Minimize() end)
+	hits[2].MouseButton1Click:Connect(function() if self.Mini then self:Restore() else self:Minimize() end end)
 	hits[3].MouseButton1Click:Connect(function()
 		if self.Mini then return end
 		big = not big
