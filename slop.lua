@@ -10,6 +10,7 @@
   - Mobile: draggable floating toggle button, bigger rows and traffic-light hit areas on touch devices
   - Every control returns an object with :SetVisible(bool), :SetDisabled(bool), :SetText(text)
   - Key system: UI:KeySystem({...}) — auth dialog with saved keys, shake on a wrong key
+  - Custom accent color (UI:SetAccentColor) and background tinting of the vibrant surfaces (UI:SetTint)
 ]]
 
 local Players = game:GetService("Players")
@@ -90,6 +91,12 @@ local saved = {}
 pcall(function() if isfile and isfile(UI_FILE) then saved = Http:JSONDecode(readfile(UI_FILE)) end end)
 local function save() pcall(function() mkdirs("Yosemite"); writefile(UI_FILE, Http:JSONEncode(saved)) end) end
 if saved.Vibrancy == nil then saved.Vibrancy = true end
+if saved.Tint == nil then saved.Tint = true end
+local function accentFrom(c)
+	return { Top = c:Lerp(WHITE, .35), Bot = c:Lerp(BLACK, .06), Border = c:Lerp(BLACK, .25), Solid = c, Focus = c:Lerp(WHITE, .4) }
+end
+Accents.Custom = accentFrom(RGB(255, 45, 85))
+pcall(function() if saved.AccentCustom then Accents.Custom = accentFrom(Color3.fromHex(saved.AccentCustom)) end end)
 
 local T = Themes[saved.Theme] or Themes.Light
 local A = Accents[saved.Accent] or Accents.Blue
@@ -447,6 +454,23 @@ function Lib:SetTheme(name)
 	if not Themes[name] then return end
 	T = Themes[name]; saved.Theme = name; save(); refresh(true)
 end
+-- any color as the accent; saving is debounced because the color picker calls this on every drag frame
+local accentSaveToken = 0
+function Lib:SetAccentColor(c)
+	Accents.Custom = accentFrom(c)
+	A = Accents.Custom
+	saved.Accent, saved.AccentCustom = "Custom", c:ToHex()
+	refresh(false)
+	accentSaveToken += 1
+	local my = accentSaveToken
+	task.delay(.5, function() if my == accentSaveToken then save() end end)
+end
+function Lib:SetTint(on, amount)
+	if on ~= nil then saved.Tint = on end
+	if amount then saved.TintAmount = amount end
+	save()
+	refresh(false)
+end
 function Lib:SetAccent(name)
 	if not Accents[name] then return end
 	A = Accents[name]; saved.Accent = name; save(); refresh(true)
@@ -658,6 +682,15 @@ dockRefresh = function()
 	local n = 0
 	for _, c in ipairs(dock:GetChildren()) do if c:IsA("GuiButton") then n += 1 end end
 	dock.Visible = n > 0 and Lib.Visible
+end
+
+function Window:_paint()
+	if not self._sideP then return end
+	local k = (saved.Vibrancy and saved.Tint and self._tint) and (saved.TintAmount or .25) or 0
+	local function c(x) return k > 0 and x:Lerp(self._tint, k) or x end
+	self._barP.Paint(self.BAR or 38, c(T.BarTop), c(T.BarBot), vib("BarT"))
+	self._sideP.Paint(1, c(T.Sidebar), c(T.Sidebar), vib("SideT"))
+	self._bodyP.Paint(1, T.Window, T.Window, 0)
 end
 
 -- the parts of the window below the titlebar (hidden while shaded)
@@ -894,7 +927,7 @@ function Window:_layout(anim)
 	self.BAR = BAR
 	local function set(o, p) if anim then tw(o, .2, p) else for k, v in pairs(p) do o[k] = v end end end
 	set(self._bar, { Size = UDim2.new(1, 0, 0, BAR) })
-	self._barP.Paint(BAR, T.BarTop, T.BarBot, vib("BarT"))
+	self:_paint()
 	set(self._title, { Size = UDim2.new(1, 0, 0, titleH) })
 	self._title.Visible = not (tb and thin)
 	set(self._grp, { Position = UDim2.fromOffset(12, math.floor((titleH - 12) / 2)) })
@@ -945,10 +978,43 @@ function Lib:Window(o)
 		Config = { Folder = cfg.Folder or "Yosemite/Configs", Format = cfg.Format or "{name}.json" } }, Window)
 	if self.Thin == nil then self.Thin = saved.Thin or false end
 	self._scale = scaleOf(root)
-	bind(function()
-		barP.Paint(self.BAR or 38, T.BarTop, T.BarBot, vib("BarT"))
-		sideP.Paint(1, T.Sidebar, T.Sidebar, vib("SideT"))
-		bodyP.Paint(1, T.Window, T.Window, 0)
+	self._sideP = sideP
+	bind(function() self:_paint() end)
+
+	-- tint: sample what's behind the window (raycasts through a 3x3 grid) and blend its color into the vibrant surfaces
+	task.spawn(function()
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		local Lighting = game:GetService("Lighting")
+		while gui.Parent do
+			if saved.Vibrancy and saved.Tint and root.Visible and Lib.Visible then
+				local cam = workspace.CurrentCamera
+				local a, z = root.AbsolutePosition + GuiService:GetGuiInset(), root.AbsoluteSize
+				params.FilterDescendantsInstances = { Players.LocalPlayer.Character }
+				local sum, n = Vector3.zero, 0
+				for ix = 1, 3 do
+					for iy = 1, 3 do
+						local ray = cam:ViewportPointToRay(a.X + z.X * ix / 4, a.Y + z.Y * iy / 4)
+						local hit = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
+						local col
+						if hit and hit.Instance:IsA("Terrain") then
+							local ok, c = pcall(workspace.Terrain.GetMaterialColor, workspace.Terrain, hit.Material)
+							col = ok and c or RGB(90, 120, 80)
+						elseif hit and hit.Instance:IsA("BasePart") then
+							col = hit.Instance.Color
+						else
+							col = Lighting.ClockTime > 6 and Lighting.ClockTime < 18 and RGB(110, 155, 215) or RGB(25, 30, 55)
+						end
+						sum += Vector3.new(col.R, col.G, col.B)
+						n += 1
+					end
+				end
+				local avg = Color3.new(sum.X / n, sum.Y / n, sum.Z / n)
+				self._tint = (self._tint or avg):Lerp(avg, .35)
+				self:_paint()
+			end
+			task.wait(.25)
+		end
 	end)
 
 	-- keyboard focus ring
@@ -1161,10 +1227,14 @@ function Window:_buildSettings()
 	local ap = self.Settings:Section("Appearance")
 	ap.NoFlags = true
 	ap:Segmented({ Text = "Appearance", Items = { "Light", "Dark" }, Default = saved.Theme or "Light", Callback = function(v) Lib:SetTheme(v) end })
-	ap:Segmented({ Text = "Accent", Items = { "Blue", "Graphite" }, Default = saved.Accent or "Blue", Callback = function(v) Lib:SetAccent(v) end })
+	ap:Segmented({ Text = "Accent", Items = { "Blue", "Graphite", "Custom" }, Default = saved.Accent or "Blue", Callback = function(v) Lib:SetAccent(v) end })
+	ap:ColorPicker({ Text = "Custom accent", Default = Accents.Custom.Solid, Callback = function(c) Lib:SetAccentColor(c) end })
 	ap:Segmented({ Text = "Titlebar", Items = { "Normal", "Thin" }, Default = self.Thin and "Thin" or "Normal",
 		Callback = function(v) self:SetThin(v == "Thin") end })
 	ap:Checkbox({ Text = "Vibrancy (blurs the game behind the UI)", Default = saved.Vibrancy, Callback = function(v) Lib:SetVibrancy(v) end })
+	ap:Checkbox({ Text = "Tint with what's behind the window", Default = saved.Tint, Callback = function(v) Lib:SetTint(v) end })
+	ap:Slider({ Text = "Tint strength", Min = 0, Max = 60, Default = math.round((saved.TintAmount or .25) * 100), Suffix = "%",
+		Callback = function(v) Lib:SetTint(nil, v / 100) end })
 	ap:Checkbox({ Text = "Reduce motion", Default = saved.Reduce or false, Callback = function(v) Lib:SetReduceMotion(v) end })
 	local ui = self.Settings:Section("Interface")
 	ui.NoFlags = true
