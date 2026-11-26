@@ -282,6 +282,7 @@ end
 
 -- vibrancy blur ---------------------------------------------------------------------
 local windows = {}
+local dockRefresh
 local blur
 local function updateBlur()
 	local want = saved.Vibrancy and Lib.Visible and #windows > 0
@@ -642,9 +643,72 @@ function Lib:KeySystem(o)
 	return result
 end
 
+-- Dock: the yellow light minimizes a window into a tile here; click the tile to restore ----
+local dock
+local function getDock()
+	if dock and dock.Parent then return dock end
+	local g = new("ScreenGui", { Name = "YosemiteDock", ResetOnSpawn = false, DisplayOrder = 95, Parent = guiParent() })
+	dock = new("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new(.5, 1), Position = UDim2.new(.5, 0, 1, -6), Size = UDim2.fromOffset(0, 60),
+		AutomaticSize = AX, Visible = false, Parent = g }, { corner(10), stroke(nil, .6), pad(6, 6, 8, 8), list(H_DIR, 8, CENTER, MID) })
+	bind(function() setp(dock, "BackgroundColor3", T.Pop); dock.BackgroundTransparency = saved.Vibrancy and .25 or .04 end)
+	return dock
+end
+dockRefresh = function()
+	if not dock then return end
+	local n = 0
+	for _, c in ipairs(dock:GetChildren()) do if c:IsA("GuiButton") then n += 1 end end
+	dock.Visible = n > 0 and Lib.Visible
+end
+
+function Window:Minimize()
+	if self.Mini then return end
+	self.Mini = true
+	if self._pop then self._pop.Close() end
+	if self._cp then self._cp.Close() end
+	if self._cmd then self._cmd.Close() end
+	self:_focus(nil)
+	local root, d = self.Root, getDock()
+	local tile = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = WHITE, Size = UDim2.fromOffset(48, 48), Parent = d },
+		{ corner(10), stroke("Border"), tgrad("BtnTop", "BtnBot") })
+	icon(self._icon or "app-window", 26, "Text", { AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), Parent = tile })
+	local tip = new("TextLabel", { BackgroundColor3 = RGB(38, 38, 40), BackgroundTransparency = .1, TextColor3 = WHITE, Font = FONT, TextSize = 12,
+		Text = self._titleText.Text, AnchorPoint = Vector2.new(.5, 1), Position = UDim2.new(.5, 0, 0, -10), Size = UDim2.fromOffset(0, 20),
+		AutomaticSize = AX, Visible = false, Parent = tile }, { corner(5), pad(0, 0, 8, 8) })
+	tile.MouseEnter:Connect(function() tip.Visible = true end)
+	tile.MouseLeave:Connect(function() tip.Visible = false end)
+	tile.MouseButton1Click:Connect(function() self:Restore() end)
+	self._tile = tile
+	dockRefresh()
+	pop(tile, .3, .3)
+	self._restore = UDim2.fromOffset(root.AbsolutePosition.X, root.AbsolutePosition.Y)
+	root.Position = self._restore
+	task.spawn(function()
+		RS.RenderStepped:Wait()
+		local c, sz, k = tile.AbsolutePosition + tile.AbsoluteSize / 2, root.AbsoluteSize / self._scale.Scale, .06
+		tw(self._scale, .35, { Scale = k }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+		tw(root, .35, { Position = UDim2.fromOffset(c.X - sz.X * k / 2, c.Y - sz.Y * k / 2) }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+			.Completed:Connect(function() if self.Mini then root.Visible = false end end)
+	end)
+end
+
+function Window:Restore()
+	if not self.Mini then return end
+	self.Mini = false
+	local tile = self._tile
+	self._tile = nil
+	self.Root.Visible = Lib.Visible
+	tw(self._scale, .35, { Scale = 1 }, Enum.EasingStyle.Quint)
+	tw(self.Root, .35, { Position = self._restore }, Enum.EasingStyle.Quint)
+	if tile then
+		tw(scaleOf(tile), .15, { Scale = 0 }).Completed:Connect(function() tile:Destroy(); dockRefresh() end)
+	end
+	for _, w in ipairs(windows) do w:SetActive(w == self) end
+end
+
 -- toggle / mobile button / global keys ------------------------------------------------
 function Window:_show(on)
 	local sc = self._scale
+	if self.Mini then return end
 	if on then
 		self.Root.Visible = true
 		sc.Scale = .92
@@ -661,6 +725,7 @@ function Lib:Toggle(state)
 	Lib.Visible = state
 	for _, w in ipairs(windows) do if w.Gui.Parent then w:_show(state) end end
 	updateBlur()
+	dockRefresh()
 	if not state and Lib.ToggleKey and not Lib.Touch then
 		Lib:Notify({ Title = "Interface hidden", Text = "Press " .. Lib.ToggleKey.Name .. " to show it again.", Icon = "eye-off", Duration = 3 })
 	end
@@ -822,7 +887,6 @@ function Window:_layout(anim)
 		set(f, { Position = UDim2.new(f.Position.X.Scale, f.Position.X.Offset, 0, BAR + 1),
 			Size = UDim2.new(f.Size.X.Scale, f.Size.X.Offset, 1, -(BAR + 1)) })
 	end
-	if self.Mini then set(self.Root, { Size = UDim2.new(self.Root.Size.X.Scale, self.Root.Size.X.Offset, 0, BAR + 1) }) end
 end
 function Window:SetThin(on) self.Thin = on; saved.Thin = on; save(); self:_layout(true) end
 
@@ -854,7 +918,7 @@ function Lib:Window(o)
 
 	local cfg = o.Config or {}
 	local self = setmetatable({ Gui = gui, Root = root, Tabs = {}, Flags = {}, Thin = o.Thin, _bar = bar, _barP = barP, _bodyP = bodyP,
-		_line = line, _title = titleRow, _titleText = titleText, _titlePaint = titlePaint, _lights = {}, _n = 0, _q = "", _openSheets = {},
+		_line = line, _title = titleRow, _titleText = titleText, _titlePaint = titlePaint, _icon = o.Icon, _lights = {}, _n = 0, _q = "", _openSheets = {},
 		Config = { Folder = cfg.Folder or "Yosemite/Configs", Format = cfg.Format or "{name}.json" } }, Window)
 	if self.Thin == nil then self.Thin = saved.Thin or false end
 	self._scale = scaleOf(root)
@@ -885,7 +949,8 @@ function Lib:Window(o)
 		grp.MouseLeave:Connect(function() for _, g in ipairs(glyphs) do tw(g, .1, { TextTransparency = 1 }) end end)
 	end
 
-	local big, prev, full = false, nil, nil
+	local big, prev = false, nil
+	gui.Destroying:Connect(function() if self._tile then self._tile:Destroy(); self._tile = nil; dockRefresh() end end)
 	hits[1].MouseButton1Click:Connect(function()
 		if self._cmd then self._cmd.Close() end
 		self:_focus(nil)
@@ -897,26 +962,7 @@ function Lib:Window(o)
 			updateBlur()
 		end)
 	end)
-	hits[2].MouseButton1Click:Connect(function()
-		self.Mini = not self.Mini
-		win.ClipsDescendants = true
-		local body = { self.Sidebar, self._bodyP.Root, self.Content }
-		if self.Mini then
-			full = root.Size
-			if self._pop then self._pop.Close() end
-			if self._cp then self._cp.Close() end
-			self:_focus(nil)
-			for _, f in ipairs(body) do f.Visible = false end
-			self.Overlay.Visible = false
-		end
-		local mini = self.Mini
-		tw(root, .25, { Size = mini and UDim2.new(root.Size.X.Scale, root.Size.X.Offset, 0, self.BAR + 1) or full }, Enum.EasingStyle.Quint)
-			.Completed:Connect(function()
-				if self.Mini or mini then return end
-				for _, f in ipairs(body) do f.Visible = true end
-				self.Overlay.Visible = self._sheets > 0
-			end)
-	end)
+	hits[2].MouseButton1Click:Connect(function() self:Minimize() end)
 	hits[3].MouseButton1Click:Connect(function()
 		if self.Mini then return end
 		big = not big
