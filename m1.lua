@@ -12,9 +12,10 @@
 	tab:Button({ Text = "Run" })               -- direct calls go to an untitled card
 
 	Components : Label Subheader Divider Button Switch/Toggle Checkbox Radio
-	             Slider TextField/Input Dropdown Keybind
+	             Slider TextField/Input Dropdown Keybind Progress ColorPicker
+	             (any component takes Tooltip = "text")
 	Window     : Tab SelectTab Snackbar/Notify Dialog FAB Toggle Minimize
-	             SetToggleKey Destroy
+	             SetToggleKey SetTitle Destroy   (drag app bar, resize grip bottom-right)
 	Lib        : M.Flags  M:SaveConfig(name)  M:LoadConfig(name)  M:ListConfigs()
 	Callbacks don't fire on creation (Default is applied silently).
 ]]
@@ -26,7 +27,7 @@ local HttpService  = game:GetService("HttpService")
 local CoreGui      = game:GetService("CoreGui")
 local LP           = Players.LocalPlayer
 
-local Material = { Flags = {}, _setters = {}, _binding = false, Version = "0.1.0" }
+local Material = { Flags = {}, _setters = {}, _binding = false, Version = "0.2.0" }
 
 ---------------------------------------------------------------- palette (MD 2014)
 local function hex(s) return Color3.fromHex(s) end
@@ -236,7 +237,62 @@ local function flatButton(T, parent, text, color, order)
 	return b
 end
 
-local function flag(o, obj, value)
+-- MD1 tooltip: dark grey chip under the element after a short hover
+local function tooltip(win, obj, text)
+	if not (win and obj and text) then return end
+	local tip, token
+	obj.MouseEnter:Connect(function()
+		local my = {}
+		token = my
+		task.delay(0.5, function()
+			if token ~= my or tip or not obj.Parent or not win.Visible then return end
+			local ap, as = obj.AbsolutePosition, obj.AbsoluteSize
+			tip = new("TextLabel", { AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.fromOffset(0, 0), AnchorPoint = Vector2.new(0.5, 0),
+				Position = UDim2.fromOffset(ap.X + as.X / 2, ap.Y + as.Y + 6), BackgroundColor3 = hex("616161"),
+				BackgroundTransparency = 1, BorderSizePixel = 0, FontFace = F(W.M), TextSize = 12, TextColor3 = Color3.new(1, 1, 1),
+				TextTransparency = 1, Text = text, ZIndex = 20, Parent = win.overlay }, { corner(2) })
+			pad(8, 8, 5, 5, tip)
+			tw(tip, 0.15, { BackgroundTransparency = 0.1, TextTransparency = 0 })
+		end)
+	end)
+	obj.MouseLeave:Connect(function()
+		token = nil
+		if tip then
+			local t = tip
+			tip = nil
+			tw(t, 0.1, { BackgroundTransparency = 1, TextTransparency = 1 })
+			task.delay(0.1, function() t:Destroy() end)
+		end
+	end)
+end
+
+-- pop-over card anchored to a row's right edge (menus, pickers); click outside closes
+local function popup(win, row, w, h, class)
+	local T, ov = win.T, win.overlay
+	local ap, as, ovs = row.AbsolutePosition, row.AbsoluteSize, ov.AbsoluteSize
+	local x = math.max(8, ap.X + as.X - w - 8)
+	local y = math.max(8, math.min(ap.Y, ovs.Y - h - 8))
+	local catcher = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = ov })
+	local holder = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, 0),
+		ZIndex = 2, Parent = ov })
+	shadow(holder, 8)
+	local surf = new(class or "Frame", { BackgroundColor3 = T.Card, BorderSizePixel = 0, ClipsDescendants = true,
+		Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = holder }, { corner(2) })
+	local closed = false
+	local function close()
+		if closed then return end
+		closed = true
+		tw(holder, 0.15, { Size = UDim2.fromOffset(w, 0) })
+		task.delay(0.15, function() holder:Destroy(); catcher:Destroy() end)
+	end
+	catcher.MouseButton1Click:Connect(close)
+	tw(holder, 0.2, { Size = UDim2.fromOffset(w, h) })
+	return surf, close
+end
+
+local function flag(o, obj, value, win)
+	if win and o.Tooltip and obj.Instance then tooltip(win, obj.Instance, o.Tooltip) end
 	if o.Flag then
 		Material.Flags[o.Flag] = value
 		Material._setters[o.Flag] = obj
@@ -311,6 +367,7 @@ function Container:Button(o)
 		hover(btn, 0.94)
 	end
 	btn.MouseButton1Click:Connect(function() fire(o.Callback) end)
+	tooltip(self.win, btn, o.Tooltip)
 	return {
 		Instance = row,
 		SetText = function(_, s) btn.Text = string.upper(s) end,
@@ -342,7 +399,7 @@ function Container:Switch(o)
 	end
 	function obj:Get() return self.Value end
 	row.MouseButton1Click:Connect(function() obj:Set(not obj.Value) end)
-	flag(o, obj, false)
+	flag(o, obj, false, self.win)
 	obj:Set(o.Default == true, true)
 	return obj
 end
@@ -373,7 +430,7 @@ function Container:Checkbox(o)
 	end
 	function obj:Get() return self.Value end
 	row.MouseButton1Click:Connect(function() obj:Set(not obj.Value) end)
-	flag(o, obj, false)
+	flag(o, obj, false, self.win)
 	obj:Set(o.Default == true, true)
 	return obj
 end
@@ -405,7 +462,7 @@ function Container:Radio(o)
 		if not silent then fire(o.Callback, v) end
 	end
 	function obj:Get() return self.Value end
-	flag(o, obj, nil)
+	flag(o, obj, nil, self.win)
 	obj:Set(o.Default, true)
 	return obj
 end
@@ -479,7 +536,7 @@ function Container:Slider(o)
 			tw(thumb, 0.15, { Size = UDim2.fromOffset(12, 12) })
 		end
 	end))
-	flag(o, obj, min)
+	flag(o, obj, min, self.win)
 	obj:Set(o.Default or min, true)
 	return obj
 end
@@ -540,7 +597,7 @@ function Container:TextField(o)
 			if c ~= box.Text then box.Text = c end
 		end)
 	end
-	flag(o, obj, box.Text)
+	flag(o, obj, box.Text, self.win)
 	float(false)
 	return obj
 end
@@ -601,31 +658,19 @@ function Container:Dropdown(o)
 	end
 
 	local function open()
-		local ov = win.overlay
 		local itemH = 48
 		local n = #options
 		local h = math.min(n, 5) * itemH + 16
 		local w = math.max(180, math.floor(row.AbsoluteSize.X * 0.5))
-		local ap, as, ovs = row.AbsolutePosition, row.AbsoluteSize, ov.AbsoluteSize
-		local y = math.max(8, math.min(ap.Y, ovs.Y - h - 8))
-		local catcher = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
-			Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = ov })
-		local holder = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(ap.X + as.X - w - 8, y),
-			Size = UDim2.fromOffset(w, 0), ZIndex = 2, Parent = ov })
-		shadow(holder, 8)
-		local surf = new("ScrollingFrame", { BackgroundColor3 = T.Card, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
-			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
-			ScrollBarImageColor3 = T.Fg, ScrollBarImageTransparency = 0.6, ZIndex = 1, Parent = holder },
-			{ corner(2), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
+		local surf, close = popup(win, row, w, h, "ScrollingFrame")
+		surf.CanvasSize = UDim2.new()
+		surf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		surf.ScrollBarThickness = 3
+		surf.ScrollBarImageColor3 = T.Fg
+		surf.ScrollBarImageTransparency = 0.6
+		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Parent = surf })
 		pad(0, 0, 8, 8, surf)
 
-		local closed = false
-		local function close()
-			if closed then return end
-			closed = true
-			tw(holder, 0.15, { Size = UDim2.fromOffset(w, 0) })
-			task.delay(0.15, function() holder:Destroy(); catcher:Destroy() end)
-		end
 		for i, opt in ipairs(options) do
 			local sel = multi and obj.Value[opt] or (not multi and obj.Value == opt)
 			local it = new("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = T.Fg, BackgroundTransparency = 1,
@@ -649,12 +694,10 @@ function Container:Dropdown(o)
 				end
 			end)
 		end
-		catcher.MouseButton1Click:Connect(close)
-		tw(holder, 0.2, { Size = UDim2.fromOffset(w, h) })
 	end
 	row.MouseButton1Click:Connect(open)
 
-	flag(o, obj, multi and {} or nil)
+	flag(o, obj, multi and {} or nil, self.win)
 	obj:Set(o.Default, true)
 	return obj
 end
@@ -735,7 +778,148 @@ function Container:Keybind(o)
 			end
 		end))
 	end
-	flag(o, obj, nil)
+	flag(o, obj, nil, self.win)
+	obj:Set(o.Default, true)
+	return obj
+end
+
+-- MD1 linear progress: Progress({Text, Value=0..1, Indeterminate})
+function Container:Progress(o)
+	o = o or {}
+	local T = self.T
+	local hasText = o.Text ~= nil
+	local row = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, hasText and 48 or 24),
+		LayoutOrder = self:_o(), Parent = self.list })
+	local pct
+	if hasText then
+		label(T, { Text = o.Text, TextSize = 14, Position = UDim2.fromOffset(16, 4), Size = UDim2.new(1, -104, 0, 24), Parent = row })
+		pct = label(T, { Text = "", TextSize = 14, TextTransparency = T.T2, TextXAlignment = Enum.TextXAlignment.Right,
+			AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 4), Size = UDim2.fromOffset(80, 24), Parent = row })
+	end
+	local track = new("Frame", { Position = UDim2.new(0, 16, 1, -14), Size = UDim2.new(1, -32, 0, 4), BackgroundColor3 = T.Accent,
+		BackgroundTransparency = 0.7, BorderSizePixel = 0, ClipsDescendants = true, Parent = row })
+	local fill = new("Frame", { Size = UDim2.fromScale(0, 1), BackgroundColor3 = T.Accent, BorderSizePixel = 0, Parent = track })
+	local loop
+	local obj = { Value = 0, Indeterminate = false, Instance = row }
+	function obj:Set(v)
+		v = math.clamp(tonumber(v) or 0, 0, 1)
+		self.Value = v
+		if not self.Indeterminate then
+			tw(fill, 0.3, { Size = UDim2.fromScale(v, 1) })
+			if pct then pct.Text = math.floor(v * 100 + 0.5) .. "%" end
+		end
+	end
+	function obj:Get() return self.Value end
+	function obj:SetIndeterminate(b)
+		self.Indeterminate = b and true or false
+		if loop then loop:Cancel(); loop = nil end
+		if b then
+			fill.Size = UDim2.fromScale(0.35, 1)
+			fill.Position = UDim2.fromScale(-0.35, 0)
+			loop = TweenService:Create(fill, TweenInfo.new(1.1, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut, -1),
+				{ Position = UDim2.fromScale(1, 0) })
+			loop:Play()
+			if pct then pct.Text = "" end
+		else
+			fill.Position = UDim2.new()
+			fill.Size = UDim2.fromScale(0, 1)
+			self:Set(self.Value)
+		end
+	end
+	tooltip(self.win, row, o.Tooltip)
+	if o.Indeterminate then obj:SetIndeterminate(true) else obj:Set(o.Value or 0) end
+	return obj
+end
+
+-- palette picker: 19 MD families -> shades (100/500/700/A200) -> hex field
+local FAMILIES = { "Red", "Pink", "Purple", "DeepPurple", "Indigo", "Blue", "LightBlue", "Cyan", "Teal", "Green",
+	"LightGreen", "Lime", "Yellow", "Amber", "Orange", "DeepOrange", "Brown", "Grey", "BlueGrey" }
+local SHADES = { 100, 500, 700, "A200" }
+
+function Container:ColorPicker(o)
+	o = o or {}
+	local T, win = self.T, self.win
+	local row = self:_row(o.Text, 48, 64)
+	local sw = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -16, 0.5, 0), Size = UDim2.fromOffset(24, 24),
+		BorderSizePixel = 0, Parent = row }, { corner("full") })
+	new("UIStroke", { Thickness = 1, Color = T.Fg, Transparency = 0.85, Parent = sw })
+
+	local obj = { Value = nil, Instance = row }
+	function obj:Set(c, silent)
+		if type(c) == "string" then
+			local ok, v = pcall(Color3.fromHex, (c:gsub("#", "")))
+			c = ok and v or nil
+		end
+		if typeof(c) ~= "Color3" then c = T.Accent end
+		self.Value = c
+		sw.BackgroundColor3 = c
+		if o.Flag then Material.Flags[o.Flag] = c end
+		if not silent then fire(o.Callback, c) end
+	end
+	function obj:Get() return self.Value end
+	local function hexOf(c) return "#" .. string.upper(c:ToHex()) end
+
+	row.MouseButton1Click:Connect(function()
+		local surf = popup(win, row, 268, 212)
+		local swatches, hexBox = {}, nil
+		local function mark()
+			for _, s in ipairs(swatches) do
+				if s.btn.Parent then
+					s.stroke.Transparency = (s.color:ToHex() == obj.Value:ToHex()) and 0.2 or 1
+				end
+			end
+		end
+		local function circle(parent, color, order, onClick)
+			local b = new("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = color, BorderSizePixel = 0,
+				Size = UDim2.fromOffset(28, 28), LayoutOrder = order, Parent = parent }, { corner("full") })
+			local st = new("UIStroke", { Thickness = 2, Color = T.Fg, Transparency = 1, Parent = b })
+			table.insert(swatches, { btn = b, color = color, stroke = st })
+			b.MouseButton1Click:Connect(onClick)
+		end
+		local function pick(c)
+			obj:Set(c)
+			hexBox.Text = hexOf(c)
+			mark()
+		end
+
+		local grid = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(16, 16), Size = UDim2.new(1, -32, 0, 96), Parent = surf },
+			{ new("UIGridLayout", { CellSize = UDim2.fromOffset(28, 28), CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+		local shades = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(16, 124), Size = UDim2.new(1, -32, 0, 28), Parent = surf },
+			{ new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+		local function showShades(fam)
+			for _, ch in ipairs(shades:GetChildren()) do if ch:IsA("GuiObject") then ch:Destroy() end end
+			for i, k in ipairs(SHADES) do
+				local c = P[fam][k]
+				if c then circle(shades, c, i, function() pick(c) end) end
+			end
+			mark()
+		end
+		for i, fam in ipairs(FAMILIES) do
+			local c = P[fam][500]
+			circle(grid, c, i, function() pick(c); showShades(fam) end)
+		end
+
+		hexBox = new("TextBox", { BackgroundTransparency = 1, ClearTextOnFocus = false, Text = hexOf(obj.Value), FontFace = F(W.R),
+			TextSize = 16, TextColor3 = T.Fg, TextTransparency = T.T1, TextXAlignment = Enum.TextXAlignment.Left,
+			Position = UDim2.fromOffset(16, 164), Size = UDim2.new(1, -32, 0, 28), Parent = surf })
+		new("Frame", { BackgroundColor3 = T.Fg, BackgroundTransparency = T.TD, BorderSizePixel = 0,
+			Position = UDim2.fromOffset(16, 192), Size = UDim2.new(1, -32, 0, 1), Parent = surf })
+		hexBox.FocusLost:Connect(function()
+			local ok, c = pcall(Color3.fromHex, (hexBox.Text:gsub("#", "")))
+			if ok and c then pick(c) else hexBox.Text = hexOf(obj.Value) end
+		end)
+
+		local start = "Grey"
+		for _, fam in ipairs(FAMILIES) do
+			for _, k in ipairs(SHADES) do
+				local c = P[fam][k]
+				if c and c:ToHex() == obj.Value:ToHex() then start = fam end
+			end
+		end
+		showShades(start)
+	end)
+
+	flag(o, obj, nil, self.win)
 	obj:Set(o.Default, true)
 	return obj
 end
@@ -812,7 +996,7 @@ function Material.Window(a, b)
 
 	-- app bar (56) + tab strip (48)
 	local bar = new("Frame", { BackgroundColor3 = T.Primary, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 104), ZIndex = 3, Parent = surf })
-	label(T, { Text = title, FontFace = F(W.M), TextSize = 20, TextColor3 = T.OnPrimary, TextTransparency = 0,
+	self.titleLabel = label(T, { Text = title, FontFace = F(W.M), TextSize = 20, TextColor3 = T.OnPrimary, TextTransparency = 0,
 		Position = UDim2.fromOffset(24, 0), Size = UDim2.new(1, -140, 0, 56), Parent = bar })
 
 	local function iconBtn(xOff)
@@ -839,9 +1023,39 @@ function Material.Window(a, b)
 	new("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, Position = UDim2.fromOffset(0, 104),
 		Size = UDim2.new(1, 0, 0, 6), ZIndex = 3, Parent = surf },
 		{ new("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(0.8, 1) }) })
-	local content = new("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 104),
+	local content = new("Frame", { BackgroundTransparency = 1, ClipsDescendants = true, Position = UDim2.fromOffset(0, 104),
 		Size = UDim2.new(1, 0, 1, -104), ZIndex = 1, Parent = surf })
 	self.bar, self.tabList, self.ind, self.content = bar, tabList, ind, content
+
+	-- resize grip (bottom-right; lives in content so it hides when minimized)
+	if o.Resizable ~= false then
+		local minW, minH = (o.MinSize and o.MinSize.X) or 380, (o.MinSize and o.MinSize.Y) or 260
+		local grip = new("TextButton", { AutoButtonColor = false, Text = "", BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 1),
+			Position = UDim2.fromScale(1, 1), Size = UDim2.fromOffset(18, 18), ZIndex = 8, Parent = content })
+		for _, g in ipairs({ { 12, 11 }, { 6, 14 } }) do
+			new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(g[2], g[2]), Size = UDim2.fromOffset(g[1], 1),
+				Rotation = -45, BackgroundColor3 = T.Fg, BackgroundTransparency = T.T3, BorderSizePixel = 0, Parent = grip })
+		end
+		local rs, rStart, sStart, pStart = false, nil, nil, nil
+		grip.InputBegan:Connect(function(i)
+			if isPress(i) then
+				rs, rStart, pStart = true, i.Position, holder.Position
+				sStart = Vector2.new(holder.Size.X.Offset, holder.Size.Y.Offset)
+			end
+		end)
+		self:_conn(UIS.InputChanged:Connect(function(i)
+			if rs and isMove(i) then
+				local d = (i.Position - rStart) / scale.Scale
+				local w = math.max(minW, sStart.X + d.X)
+				local h = math.max(minH, sStart.Y + d.Y)
+				holder.Size = UDim2.fromOffset(w, h)
+				-- anchor is centered, so shift by half to keep top-left pinned
+				holder.Position = UDim2.new(pStart.X.Scale, pStart.X.Offset + (w - sStart.X) / 2,
+					pStart.Y.Scale, pStart.Y.Offset + (h - sStart.Y) / 2)
+			end
+		end))
+		self:_conn(UIS.InputEnded:Connect(function(i) if isPress(i) then rs = false end end))
+	end
 
 	-- overlay for menus
 	self.overlay = new("Frame", { Name = "Overlay", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 10, Parent = gui })
@@ -933,6 +1147,7 @@ function Window:Toggle(v)
 end
 
 function Window:SetToggleKey(k) self.ToggleKey = toKey(k) end
+function Window:SetTitle(s) self.titleLabel.Text = tostring(s) end
 
 function Window:Minimize(v)
 	if v == nil then v = not self.Minimized end
@@ -955,7 +1170,7 @@ function Window:Snackbar(text, o)
 	local T = self.T
 	if self._snack then self._snack() end
 	local bar = new("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 60), Size = UDim2.fromOffset(0, 48),
-		AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = hex("323232"), BorderSizePixel = 0, ZIndex = 5, Parent = self.surf },
+		AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = hex("323232"), BorderSizePixel = 0, ZIndex = 5, Parent = self.content },
 		{ corner(2), new("UISizeConstraint", { MinSize = Vector2.new(288, 48), MaxSize = Vector2.new(568, 48) }),
 		  new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center,
 			  Padding = UDim.new(0, 16), SortOrder = Enum.SortOrder.LayoutOrder }) })
@@ -985,6 +1200,7 @@ Window.Notify = Window.Snackbar
 function Window:Dialog(o)
 	o = o or {}
 	local T = self.T
+	if self.Minimized then self:Minimize(false) end
 	local scrim = new("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
 		Size = UDim2.fromScale(1, 1), ZIndex = 6, Parent = self.surf })
 	local h = new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
@@ -1035,7 +1251,7 @@ function Window:FAB(o)
 	o = o or {}
 	local T = self.T
 	local h = new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -24, 1, -24),
-		Size = UDim2.fromOffset(56, 56), ZIndex = 4, Parent = self.surf })
+		Size = UDim2.fromOffset(56, 56), ZIndex = 4, Parent = self.content })
 	local setS = shadow(h, 6, "full")
 	local b = new("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = T.Accent, BorderSizePixel = 0,
 		ClipsDescendants = true, Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = h }, { corner("full") })
@@ -1068,7 +1284,8 @@ function Material:SaveConfig(name)
 	if not writefile then return false, "writefile unavailable" end
 	local out = {}
 	for k, v in pairs(self.Flags) do
-		out[k] = (typeof(v) == "EnumItem") and v.Name or v
+		if typeof(v) == "EnumItem" then v = v.Name elseif typeof(v) == "Color3" then v = "#" .. v:ToHex() end
+		out[k] = v
 	end
 	if makefolder and isfolder and not isfolder(CFG) then makefolder(CFG) end
 	writefile(CFG .. "/" .. name .. ".json", HttpService:JSONEncode(out))
